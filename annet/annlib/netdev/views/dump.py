@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import inspect
 import sys
 import traceback
@@ -20,6 +21,22 @@ class DumpResult(str):
 
 class _EnumAllAttrs:
     pass
+
+
+# Data classes that do not know about dumping, they are dumped like DumpableView.
+# The adapters that have such classes register them, see register_plain_type().
+_PLAIN_TYPES: list[type] = []
+
+
+@functools.singledispatch
+def dump_list_key(obj: object) -> str | None:
+    return cast("str | None", getattr(obj, "_dump__list_key", None))
+
+
+def register_plain_type(cls: type, list_key: Callable[[Any], str]) -> None:
+    """Dump the instances of cls attribute by attribute, list_key names them in a list."""
+    _PLAIN_TYPES.append(cls)
+    dump_list_key.register(cls, list_key)
 
 
 class DumpableView:
@@ -76,13 +93,15 @@ class DumpableView:
     def __dump_value(self, prefix: str, value: Any, seen: dict[int, str]) -> list[str]:
         ret: list[str] = []
         op = "="
-        if isinstance(value, DumpableView):
+        if isinstance(value, (DumpableView, *_PLAIN_TYPES)):
             # recursion guard - later occurrences are rendered as references rather than dumped again
             if id(value) in seen:
                 value = DumpResult(seen[id(value)])
                 op = "->"
             else:
                 seen[id(value)] = prefix
+                if not isinstance(value, DumpableView):
+                    value = _PlainView(value)
 
         if isinstance(value, DumpableView):
             ret += value.dump(prefix, seen=seen)  # pylint: disable=no-member
@@ -91,7 +110,7 @@ class DumpableView:
                 ret.extend(self.__dump_value(f"{prefix}[{repr(k)}]", v, seen))
         elif isinstance(value, (list, tuple)):
             for i, v in enumerate(value):
-                name = getattr(v, "_dump__list_key", None)
+                name = dump_list_key(v)
                 name = repr(name) if name is not None else str(i)
                 ret.extend(self.__dump_value(f"{prefix}[{name}]", v, seen))
         else:
@@ -140,3 +159,20 @@ class DumpableView:
             if inspect.ismethod(state[key]):
                 del state[key]
         return state
+
+
+class _PlainView(DumpableView):
+    """Makes an object that does not know about dumping dumpable."""
+
+    def __init__(self, obj: object) -> None:
+        self._obj = obj
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "_obj":
+            raise AttributeError(name)
+        return getattr(self._obj, name)
+
+    def _enum_attrs(self) -> Iterator[str]:
+        for attr in dir(self._obj):
+            if not attr.startswith("_") and attr != "dump":
+                yield attr
