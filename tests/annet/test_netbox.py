@@ -1,69 +1,29 @@
-from datetime import datetime
-from types import ModuleType
-from unittest.mock import MagicMock
-
 import pytest
-from annetbox.base.models import PagingResponse
 from annetbox.v37 import models as v37_api_models
 from annetbox.v41 import models as v41_api_models
 from annetbox.v42 import models as v42_api_models
 
 from annet.adapters.netbox.common.query import NetboxQuery
 from annet.adapters.netbox.common.storage_base import parse_glob
+from annet.adapters.netbox.common.storage_opts import NetboxStorageOpts
 from annet.adapters.netbox.v37 import storage as v37_storage
 from annet.adapters.netbox.v41 import storage as v41_storage
 from annet.adapters.netbox.v42 import storage as v42_storage
 
 
-ADAPTERS = [
-    pytest.param(v37_storage.NetboxV37Adapter, v37_api_models, id="v37"),
-    pytest.param(v41_storage.NetboxV41Adapter, v41_api_models, id="v41"),
-    pytest.param(v42_storage.NetboxV42Adapter, v42_api_models, id="v42"),
+STORAGES = [
+    pytest.param(v37_storage.NetboxStorageV37, "NetboxV37", id="v37"),
+    pytest.param(v41_storage.NetboxStorageV41, "NetboxV41", id="v41"),
+    pytest.param(v42_storage.NetboxStorageV42, "NetboxV42", id="v42"),
 ]
 
 
-def _make_site(api_mod: ModuleType, site_id: int = 1):
-    return api_mod.Site(
-        id=site_id,
-        name="site-a",
-        display="site-a",
-        url="http://nb/api/dcim/sites/1/",
-        slug="site-a",
-        status=api_mod.Label(value="active", label="Active"),
-        custom_fields={"tacacs_state": "on"},
-        created=datetime(2024, 1, 1),
-        last_updated=datetime(2024, 1, 2),
-    )
+@pytest.mark.parametrize("storage_cls,client_name", STORAGES)
+def test_storage_exposes_the_annetbox_client(storage_cls, client_name):
+    storage = storage_cls(NetboxStorageOpts(url="http://localhost", token=""))
 
-
-@pytest.mark.parametrize("adapter_cls,api_mod", ADAPTERS)
-def test_adapter_get_site_passthrough(adapter_cls, api_mod):
-    adapter = adapter_cls.__new__(adapter_cls)
-    adapter.netbox = MagicMock()
-    adapter.netbox.dcim_site.return_value = _make_site(api_mod)
-
-    site = adapter.get_site(1)
-
-    adapter.netbox.dcim_site.assert_called_once_with(1)
-    assert site.id == 1
-    assert site.custom_fields == {"tacacs_state": "on"}
-
-
-@pytest.mark.parametrize("adapter_cls,api_mod", ADAPTERS)
-def test_adapter_list_sites(adapter_cls, api_mod):
-    adapter = adapter_cls.__new__(adapter_cls)
-    adapter.netbox = MagicMock()
-    adapter.netbox.dcim_all_sites.return_value = PagingResponse(
-        count=1,
-        next=None,
-        previous=None,
-        results=[_make_site(api_mod)],
-    )
-
-    sites = adapter.list_sites()
-
-    adapter.netbox.dcim_all_sites.assert_called_once_with()
-    assert [s.id for s in sites] == [1]
+    assert type(storage.client).__name__ == client_name
+    assert storage.client is storage.netbox.client
 
 
 @pytest.mark.parametrize(

@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import ssl
-from ipaddress import ip_interface
 from logging import getLogger
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Generic, List, Optional, TypeVar, Union, cast
 
-from annetbox.v37 import models as api_models
+from annetbox.common.loader import NetboxLoader
 from requests import Session
 from requests_cache import CachedSession
 from requests_cache.backends.sqlite import SQLiteCache
 
 from annet.adapters.netbox.common.query import FIELD_VALUE_SEPARATOR, NetboxQuery
-from annet.adapters.netbox.common.storage_opts import NetboxStorageOpts
+from annet.adapters.netbox.common.storage_opts import NetboxStorageOpts, make_ssl_context
 from annet.storage import Device as DeviceProtocol
 from annet.storage import Interface as StorageInterface
 from annet.storage import Storage
@@ -21,7 +20,7 @@ from annet.storage import Storage
 if TYPE_CHECKING:
     from typing_extensions import Self
 
-from .adapter import NetboxAdapter
+from .adapter import make_device
 from .models import (
     FHRPGroup,
     FHRPGroupAssignment,
@@ -59,6 +58,8 @@ class BaseNetboxStorage(
     Base class for Netbox storage
     """
 
+    device_cls: type[NetboxDeviceT]
+
     def __init__(self, opts: Optional[NetboxStorageOpts] = None):
         ctx: Optional[ssl.SSLContext] = None
         url = ""
@@ -67,10 +68,7 @@ class BaseNetboxStorage(
         threads = 1
         session_factory = None
         if opts:
-            if opts.insecure:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
+            ctx = make_ssl_context(opts.insecure)
             url = opts.url
             token = opts.token
             threads = opts.threads
@@ -92,6 +90,11 @@ class BaseNetboxStorage(
         self._name_devices: dict[str, NetboxDeviceT] = {}
         self._short_name_devices: dict[str, NetboxDeviceT] = {}
 
+    @property
+    def client(self) -> Any:
+        """The NetBox client of annetbox, call it for everything the storage does not do."""
+        return self.netbox.client
+
     def _init_adapter(
         self,
         url: str,
@@ -99,7 +102,7 @@ class BaseNetboxStorage(
         ssl_context: Optional[ssl.SSLContext],
         threads: int,
         session_factory: Callable[[Session], Session] | None = None,
-    ) -> NetboxAdapter[NetboxDeviceT, InterfaceT, IpAddressT, PrefixT, FHRPGroupT, FHRPGroupAssignmentT]:
+    ) -> NetboxLoader[Any, InterfaceT, IpAddressT, PrefixT, FHRPGroupT, FHRPGroupAssignmentT]:
         raise NotImplementedError()
 
     def __enter__(self) -> Self:
@@ -150,7 +153,7 @@ class BaseNetboxStorage(
             query = NetboxQuery.new(globs)
 
         new_devices = self._load_devices(query)
-        self._fill_device_interfaces(new_devices)
+        self.netbox.fill_interfaces(new_devices)
         for device in new_devices:
             self._record_device(device)
         return devices + new_devices
@@ -160,45 +163,11 @@ class BaseNetboxStorage(
             return []
         query_groups = parse_glob(self.exact_host_filter, query)
         devices = [
-            device
+            make_device(self.device_cls, device, self)
             for device in self.netbox.list_devices(query_groups)
             if _match_query(self.exact_host_filter, query, device)
         ]
         return devices
-
-    def _fill_device_interfaces(self, devices: list[NetboxDeviceT]) -> None:
-        device_mapping = {d.id: d for d in devices}
-        interfaces = self.netbox.list_interfaces_by_devices(list(device_mapping))
-        for interface in interfaces:
-            device_mapping[interface.device.id].interfaces.append(interface)
-        self._fill_interface_fhrp_groups(interfaces)
-        self._fill_interface_ipaddress(interfaces)
-
-    def _fill_interface_fhrp_groups(self, interfaces: list[InterfaceT]) -> None:
-        interface_mapping = {i.id: i for i in interfaces if i.count_fhrp_groups}
-        assignments = self.netbox.list_fhrp_group_assignments(list(interface_mapping))
-        group_ids = {r.fhrp_group_id for r in assignments}
-        groups = {g.id: g for g in self.netbox.list_fhrp_groups(list(group_ids))}
-        for assignment in assignments:
-            assignment.group = groups[assignment.fhrp_group_id]
-            assert assignment.interface_id is not None
-            interface_mapping[assignment.interface_id].fhrp_groups.append(assignment)
-
-    def _fill_interface_ipaddress(self, interfaces: list[InterfaceT]) -> None:
-        interface_mapping = {i.id: i for i in interfaces if i.count_ipaddresses}
-        ips = self.netbox.list_ipaddr_by_ifaces(list(interface_mapping))
-        for ip in ips:
-            assert ip.assigned_object_id is not None
-            interface_mapping[ip.assigned_object_id].ip_addresses.append(ip)
-        self._fill_ipaddr_prefixes(ips)
-
-    def _fill_ipaddr_prefixes(self, ips: list[IpAddressT]) -> None:
-        ip_to_cidrs: Dict[str, str] = {ip.address: str(ip_interface(ip.address).network) for ip in ips}
-        prefixes = self.netbox.list_ipprefixes(list(ip_to_cidrs.values()))
-        cidr_to_prefix: Dict[str, PrefixT] = {x.prefix: x for x in prefixes}
-        for ip in ips:
-            cidr = ip_to_cidrs[ip.address]
-            ip.prefix = cidr_to_prefix.get(cidr)
 
     def _record_device(self, device: NetboxDeviceT) -> None:
         self._id_devices[device.id] = device
@@ -217,8 +186,8 @@ class BaseNetboxStorage(
         if obj_id in self._id_devices:
             return self._id_devices[obj_id]
 
-        device = self.netbox.get_device(obj_id)
-        self._fill_device_interfaces([device])
+        device = make_device(self.device_cls, self.netbox.get_device(obj_id), self)
+        self.netbox.fill_interfaces([device])
         self._record_device(device)
         return device
 

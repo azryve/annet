@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ssl
 from datetime import timedelta
 from typing import Any
 
@@ -8,6 +9,15 @@ from .query import parse_query
 
 
 DEFAULT_URL = "http://localhost"
+
+
+def make_ssl_context(insecure: bool) -> ssl.SSLContext | None:
+    if not insecure:
+        return None
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 class NetboxStorageOpts:

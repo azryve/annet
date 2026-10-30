@@ -1,21 +1,14 @@
-from abc import ABC, abstractmethod
-from typing import Any, Generic, TypeVar
+import dataclasses
+from typing import Any, TypeVar
 
 from annet.annlib.netdev.views.hardware import HardwareView
+from annet.storage import Storage
 
 from .manufacturer import get_breed, get_hw
-from .models import FHRPGroup, FHRPGroupAssignment, Interface, IpAddress, NetboxDevice, Prefix
+from .models import NetboxDevice
 
 
 NetboxDeviceT = TypeVar("NetboxDeviceT", bound=NetboxDevice[Any, Any])
-InterfaceT = TypeVar("InterfaceT", bound=Interface[Any, Any])
-IpAddressT = TypeVar("IpAddressT", bound=IpAddress[Any])
-PrefixT = TypeVar("PrefixT", bound=Prefix)
-FHRPGroupT = TypeVar("FHRPGroupT", bound=FHRPGroup[Any])
-FHRPGroupAssignmentT = TypeVar(
-    "FHRPGroupAssignmentT",
-    bound=FHRPGroupAssignment[Any],
-)
 
 
 def get_device_breed(device: NetboxDeviceT) -> str:
@@ -37,55 +30,16 @@ def get_device_hw(device: NetboxDeviceT) -> HardwareView:
     return HardwareView("", "")
 
 
-class NetboxAdapter(
-    ABC,
-    Generic[
-        NetboxDeviceT,
-        InterfaceT,
-        IpAddressT,
-        PrefixT,
-        FHRPGroupT,
-        FHRPGroupAssignmentT,
-    ],
-):
-    @abstractmethod
-    def list_fqdns(self, query: dict[str, list[str]] | None = None) -> list[str]:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def list_devices(self, query: dict[str, list[str]]) -> list[NetboxDeviceT]:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def get_device(self, device_id: int) -> NetboxDeviceT:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def list_interfaces_by_devices(self, device_ids: list[int]) -> list[InterfaceT]:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def list_interfaces(self, ids: list[int]) -> list[InterfaceT]:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def list_ipaddr_by_ifaces(self, iface_ids: list[int]) -> list[IpAddressT]:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def list_ipprefixes(self, prefixes: list[str]) -> list[PrefixT]:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def list_fhrp_group_assignments(
-        self,
-        iface_ids: list[int],
-    ) -> list[FHRPGroupAssignmentT]:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def list_fhrp_groups(
-        self,
-        ids: list[int],
-    ) -> list[FHRPGroupT]:
-        raise NotImplementedError()
+def make_device(cls: type[NetboxDeviceT], device: Any, storage: Storage) -> NetboxDeviceT:
+    """
+    Make the device of annet from the device that annetbox converted,
+    all its fields are taken as they are.
+    """
+    return cls(
+        **{f.name: getattr(device, f.name) for f in dataclasses.fields(device)},
+        fqdn=device.name,
+        hostname=device.name,
+        hw=get_device_hw(device),
+        breed=get_device_breed(device),
+        storage=storage,
+    )

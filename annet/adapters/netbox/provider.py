@@ -6,20 +6,20 @@ from annet.connectors import AdapterWithConfig, AdapterWithName
 from annet.storage import Storage, StorageOpts, StorageProvider
 
 from .common.query import NetboxQuery
-from .common.storage_opts import NetboxStorageOpts
+from .common.storage_opts import NetboxStorageOpts, make_ssl_context
 
 
 def storage_factory(opts: NetboxStorageOpts) -> Storage:
     # Providers are discovered before the configured storage adapter is selected.
-    from dataclass_rest.exceptions import ClientError, ClientLibraryError
+    from annetbox.base.client_sync import NetboxStatusClient
+    from annetbox.base.exceptions import ClientError, ClientLibraryError
 
-    from .common.status_client import NetboxStatusClient
     from .common.storage_base import BaseNetboxStorage
     from .v37.storage import NetboxStorageV37
     from .v41.storage import NetboxStorageV41
     from .v42.storage import NetboxStorageV42
 
-    client = NetboxStatusClient(opts.url, opts.token, opts.insecure)
+    client = NetboxStatusClient(opts.url, opts.token, make_ssl_context(opts.insecure))
     version_class_map: dict[str, type[BaseNetboxStorage[Any, Any, Any, Any, Any, Any]]] = {
         "3.4": NetboxStorageV37,
         "3.7": NetboxStorageV37,
